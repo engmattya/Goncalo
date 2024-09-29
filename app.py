@@ -173,7 +173,7 @@ async def init_graph_client():
         )
         return GraphClient(credential=credential)
     except Exception as e:
-        logging.exception("Exception in Microsoft Graph initialization", e)
+        logging.exception("Exception in Microsoft Graph initialization")
         raise e
 
 # Password Reset Function
@@ -192,7 +192,7 @@ async def reset_user_password(username):
             }
         }
     
-        # Update the user's password
+        # Update the user's password using Microsoft Graph API
         response = await graph_client.patch(f'/users/{username}', json=user_payload)
     
         if response.status_code == 204:
