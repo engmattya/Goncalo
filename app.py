@@ -100,7 +100,7 @@ async def init_openai_client():
         6. Resolving Outlook-related issues: Assist with common Outlook problems and configurations.
         7. Configuring in-house applications: Help users set up and properly configure in-house applications to function correctly in Microsoft Edge.
 
-        Always be polite, professional, and patient. If you're unsure about any specific CNS policies or procedures, kindly inform the user that you'll need to escalate the issue to a human IT specialist.
+        Always be polite, professional, and patient. You can now directly reset passwords for users without escalating to human IT specialists.
         """
 
         # API version check
@@ -177,7 +177,7 @@ async def init_graph_client():
         raise e
 
 # Password Reset Function
-async def reset_user_password(user_id):
+async def reset_user_password(username):
     try:
         graph_client = await init_graph_client()
         
@@ -193,10 +193,10 @@ async def reset_user_password(user_id):
         }
     
         # Update the user's password
-        response = await graph_client.patch(f'/users/{user_id}', json=user_payload)
+        response = await graph_client.patch(f'/users/{username}', json=user_payload)
     
         if response.status_code == 204:
-            logging.info(f"Password reset successfully for user {user_id}")
+            logging.info(f"Password reset successfully for user {username}")
             return new_password
         else:
             logging.error(f"Failed to reset password: {response.text}")
@@ -205,30 +205,12 @@ async def reset_user_password(user_id):
         logging.error(f"Password reset failed: {e}")
         raise e
 
-async def verify_user_for_password_reset(user_id, user_email):
-    try:
-        graph_client = await init_graph_client()
-        
-        # Verify user exists and email matches
-        response = await graph_client.get(f'/users/{user_id}')
-        if response.status_code != 200:
-            return False
-        
-        user_data = response.json()
-        if user_data.get('mail', '').lower() != user_email.lower():
-            return False
-        
-        return True
-    except Exception as e:
-        logging.error(f"Error verifying user for password reset: {e}")
-        return False
-
-async def log_password_reset(user_id, user_email):
-    logging.info(f"Password reset successful for user {user_id} with email {user_email}")
+async def log_password_reset(username):
+    logging.info(f"Password reset successful for user {username}")
     # In a real implementation, you would want to log this to a secure, tamper-evident system
 
-async def log_failed_password_reset_attempt(user_id, user_email, error=None):
-    logging.warning(f"Failed password reset attempt for user {user_id} with email {user_email}. Error: {error}")
+async def log_failed_password_reset_attempt(username, error=None):
+    logging.warning(f"Failed password reset attempt for user {username}. Error: {error}")
     # In a real implementation, you would want to log this to a secure, tamper-evident system
 
 async def init_cosmosdb_client():
@@ -386,7 +368,8 @@ async def complete_chat_request(request_body, request_headers):
         response = await promptflow_request(request_body)
         history_metadata = request_body.get("history_metadata", {})
         return format_pf_non_streaming_response(
-            response, history_metadata,
+            response,
+            history_metadata,
             app_settings.promptflow.response_field_name,
             app_settings.promptflow.citations_field_name
         )
@@ -451,31 +434,32 @@ async def conversation():
 
     if 'reset my password' in user_message.lower():
         try:
-            # Authenticate the user (you should implement a robust authentication method here)
-            authenticated_user = get_authenticated_user_details(request.headers)
-            user_id = authenticated_user["user_principal_id"]
-            user_email = authenticated_user["user_email"]
-
-            if await verify_user_for_password_reset(user_id, user_email):
+            # Extract username from the conversation
+            username = None
+            for message in request_json['messages']:
+                if 'Username:' in message['content']:
+                    username = message['content'].split('Username:')[1].strip()
+                    break
+            
+            if not username:
+                assistant_response = {
+                    "id": str(uuid.uuid4()),
+                    "role": "assistant",
+                    "content": "I'm sorry, but I couldn't find your username in our conversation. Can you please provide your username?"
+                }
+            else:
                 # Reset the password
-                new_password = await reset_user_password(user_id)
+                new_password = await reset_user_password(username)
 
                 # Log the successful password reset
-                await log_password_reset(user_id, user_email)
+                await log_password_reset(username)
 
                 # Respond to the user with the new password
                 assistant_response = {
                     "id": str(uuid.uuid4()),
                     "role": "assistant",
-                    "content": f"Your password has been reset. Your new password is: {new_password}\n\nPlease change this password immediately after logging in."
+                    "content": f"Your password has been reset successfully. Your new temporary password is: {new_password}\n\nPlease log in with this temporary password and change it to a strong, unique password of your choosing immediately.\n\nIs there anything else I can assist you with regarding your account or any other IT matters?"
                 }
-            else:
-                assistant_response = {
-                    "id": str(uuid.uuid4()),
-                    "role": "assistant",
-                    "content": "I'm sorry, but I couldn't verify your identity for a password reset. Please contact IT support for assistance."
-                }
-                await log_failed_password_reset_attempt(user_id, user_email)
 
             return jsonify(assistant_response), 200
         except Exception as e:
@@ -483,9 +467,10 @@ async def conversation():
             assistant_response = {
                 "id": str(uuid.uuid4()),
                 "role": "assistant",
-                "content": "Sorry, I was unable to reset your password. Please contact the IT support team for assistance."
+                "content": "I apologize, but I encountered an error while trying to reset your password. Please try again later or contact the IT support team for assistance."
             }
-            await log_failed_password_reset_attempt(user_id, user_email, str(e))
+            if username:
+                await log_failed_password_reset_attempt(username, str(e))
             return jsonify(assistant_response), 200
 
     # Continue with existing conversation logic
@@ -898,7 +883,7 @@ async def generate_title(conversation_messages) -> str:
         return title
     except Exception as e:
         logging.exception("Exception while generating title", e)
-        return messages[-2]["content"]
+        return conversation_messages[-2]["content"]
 
 def create_app():
     app = Quart(__name__)
