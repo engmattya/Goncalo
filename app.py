@@ -1,5 +1,3 @@
-Not working
-
 import copy
 import json
 import os
@@ -7,6 +5,8 @@ import logging
 import uuid
 import httpx
 import asyncio
+import random
+import string
 from quart import (
     Blueprint,
     Quart,
@@ -182,7 +182,7 @@ async def reset_user_password(user_id):
         graph_client = await init_graph_client()
         
         # Generate a new password (ensure it meets your organization's password policy)
-        new_password = "NewP@ssw0rd123!"  # Ideally, generate a secure, random password
+        new_password = ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation, k=16))
     
         # Prepare the payload
         user_payload = {
@@ -193,10 +193,7 @@ async def reset_user_password(user_id):
         }
     
         # Update the user's password
-        response = await graph_client.patch(
-            f'/users/{user_id}',
-            json=user_payload
-        )
+        response = await graph_client.patch(f'/users/{user_id}', json=user_payload)
     
         if response.status_code == 204:
             logging.info(f"Password reset successfully for user {user_id}")
@@ -208,36 +205,31 @@ async def reset_user_password(user_id):
         logging.error(f"Password reset failed: {e}")
         raise e
 
-# Email Sending Function
-async def send_password_reset_email(user_email, new_password):
+async def verify_user_for_password_reset(user_id, user_email):
     try:
         graph_client = await init_graph_client()
-        email_message = {
-            "message": {
-                "subject": "Your Password Has Been Reset",
-                "body": {
-                    "contentType": "Text",
-                    "content": f"Hello,\n\nYour password has been reset. Your new temporary password is: {new_password}\n\nPlease change it upon next sign-in."
-                },
-                "toRecipients": [
-                    {
-                        "emailAddress": {
-                            "address": user_email
-                        }
-                    }
-                ]
-            }
-        }
-
-        response = await graph_client.post(f'/users/{user_email}/sendMail', json=email_message)
-        if response.status_code == 202:
-            logging.info(f"Email sent successfully to {user_email}")
-        else:
-            logging.error(f"Failed to send email: {response.text}")
-            raise Exception(f"Failed to send email: {response.status_code}")
+        
+        # Verify user exists and email matches
+        response = await graph_client.get(f'/users/{user_id}')
+        if response.status_code != 200:
+            return False
+        
+        user_data = response.json()
+        if user_data.get('mail', '').lower() != user_email.lower():
+            return False
+        
+        return True
     except Exception as e:
-        logging.error(f"Failed to send email: {e}")
-        raise e
+        logging.error(f"Error verifying user for password reset: {e}")
+        return False
+
+async def log_password_reset(user_id, user_email):
+    logging.info(f"Password reset successful for user {user_id} with email {user_email}")
+    # In a real implementation, you would want to log this to a secure, tamper-evident system
+
+async def log_failed_password_reset_attempt(user_id, user_email, error=None):
+    logging.warning(f"Failed password reset attempt for user {user_id} with email {user_email}. Error: {error}")
+    # In a real implementation, you would want to log this to a secure, tamper-evident system
 
 async def init_cosmosdb_client():
     cosmos_conversation_client = None
@@ -344,7 +336,6 @@ async def promptflow_request(request):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {app_settings.promptflow.api_key}",
         }
-        # Adding timeout for scenarios where response takes longer to come back
         logging.debug(f"Setting timeout to {app_settings.promptflow.response_timeout}")
         async with httpx.AsyncClient(
             timeout=float(app_settings.promptflow.response_timeout)
@@ -354,8 +345,6 @@ async def promptflow_request(request):
                 app_settings.promptflow.request_field_name,
                 app_settings.promptflow.response_field_name
             )
-            # NOTE: This only support question and chat_history parameters
-            # If you need to add more parameters, you need to modify the request body
             response = await client.post(
                 app_settings.promptflow.endpoint,
                 json={
@@ -370,8 +359,6 @@ async def promptflow_request(request):
     except Exception as e:
         logging.error(f"An error occurred while making promptflow_request: {e}")
         raise
-
-# ... (previous code remains the same)
 
 async def send_chat_request(request_body, request_headers):
     filtered_messages = []
@@ -399,8 +386,7 @@ async def complete_chat_request(request_body, request_headers):
         response = await promptflow_request(request_body)
         history_metadata = request_body.get("history_metadata", {})
         return format_pf_non_streaming_response(
-            response,
-            history_metadata,
+            response, history_metadata,
             app_settings.promptflow.response_field_name,
             app_settings.promptflow.citations_field_name
         )
@@ -465,23 +451,31 @@ async def conversation():
 
     if 'reset my password' in user_message.lower():
         try:
-            # Authenticate the user (you may need to verify their identity further)
+            # Authenticate the user (you should implement a robust authentication method here)
             authenticated_user = get_authenticated_user_details(request.headers)
             user_id = authenticated_user["user_principal_id"]
             user_email = authenticated_user["user_email"]
 
-            # Reset the password
-            new_password = await reset_user_password(user_id)
+            if await verify_user_for_password_reset(user_id, user_email):
+                # Reset the password
+                new_password = await reset_user_password(user_id)
 
-            # Send email notification
-            await send_password_reset_email(user_email, new_password)
+                # Log the successful password reset
+                await log_password_reset(user_id, user_email)
 
-            # Respond to the user
-            assistant_response = {
-                "id": str(uuid.uuid4()),
-                "role": "assistant",
-                "content": "Your password has been reset. Please check your email for further instructions."
-            }
+                # Respond to the user with the new password
+                assistant_response = {
+                    "id": str(uuid.uuid4()),
+                    "role": "assistant",
+                    "content": f"Your password has been reset. Your new password is: {new_password}\n\nPlease change this password immediately after logging in."
+                }
+            else:
+                assistant_response = {
+                    "id": str(uuid.uuid4()),
+                    "role": "assistant",
+                    "content": "I'm sorry, but I couldn't verify your identity for a password reset. Please contact IT support for assistance."
+                }
+                await log_failed_password_reset_attempt(user_id, user_email)
 
             return jsonify(assistant_response), 200
         except Exception as e:
@@ -491,6 +485,7 @@ async def conversation():
                 "role": "assistant",
                 "content": "Sorry, I was unable to reset your password. Please contact the IT support team for assistance."
             }
+            await log_failed_password_reset_attempt(user_id, user_email, str(e))
             return jsonify(assistant_response), 200
 
     # Continue with existing conversation logic
@@ -504,23 +499,19 @@ def get_frontend_settings():
         logging.exception("Exception in /frontend_settings")
         return jsonify({"error": str(e)}), 500
 
-## Conversation History API ##
 @bp.route("/history/generate", methods=["POST"])
 async def add_conversation():
     await cosmos_db_ready.wait()
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for conversation_id
     request_json = await request.get_json()
     conversation_id = request_json.get("conversation_id", None)
 
     try:
-        # make sure cosmos is configured
         if not current_app.cosmos_conversation_client:
             raise Exception("CosmosDB is not configured or not working")
 
-        # check for the conversation_id, if the conversation is not set, we will create a new one
         history_metadata = {}
         if not conversation_id:
             title = await generate_title(request_json["messages"])
@@ -531,8 +522,6 @@ async def add_conversation():
             history_metadata["title"] = title
             history_metadata["date"] = conversation_dict["createdAt"]
 
-        ## Format the incoming message object in the "chat/completions" messages format
-        ## then write it to the conversation history in cosmos
         messages = request_json["messages"]
         if len(messages) > 0 and messages[-1]["role"] == "user":
             createdMessageValue = await current_app.cosmos_conversation_client.create_message(
@@ -550,7 +539,6 @@ async def add_conversation():
         else:
             raise Exception("No user message found")
 
-        # Submit request to Chat Completions for response
         request_body = await request.get_json()
         history_metadata["conversation_id"] = conversation_id
         request_body["history_metadata"] = history_metadata
@@ -566,32 +554,25 @@ async def update_conversation():
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for conversation_id
     request_json = await request.get_json()
     conversation_id = request_json.get("conversation_id", None)
 
     try:
-        # make sure cosmos is configured
         if not current_app.cosmos_conversation_client:
             raise Exception("CosmosDB is not configured or not working")
 
-        # check for the conversation_id, if the conversation is not set, we will create a new one
         if not conversation_id:
             raise Exception("No conversation_id found")
 
-        ## Format the incoming message object in the "chat/completions" messages format
-        ## then write it to the conversation history in cosmos
         messages = request_json["messages"]
         if len(messages) > 0 and messages[-1]["role"] == "assistant":
             if len(messages) > 1 and messages[-2].get("role", None) == "tool":
-                # write the tool message first
                 await current_app.cosmos_conversation_client.create_message(
                     uuid=str(uuid.uuid4()),
                     conversation_id=conversation_id,
                     user_id=user_id,
                     input_message=messages[-2],
                 )
-            # write the assistant message
             await current_app.cosmos_conversation_client.create_message(
                 uuid=messages[-1]["id"],
                 conversation_id=conversation_id,
@@ -601,7 +582,6 @@ async def update_conversation():
         else:
             raise Exception("No bot messages found")
 
-        # Submit request to Chat Completions for response
         response = {"success": True}
         return jsonify(response), 200
 
@@ -615,7 +595,6 @@ async def update_message():
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for message_id
     request_json = await request.get_json()
     message_id = request_json.get("message_id", None)
     message_feedback = request_json.get("message_feedback", None)
@@ -626,7 +605,6 @@ async def update_message():
         if not message_feedback:
             return jsonify({"error": "message_feedback is required"}), 400
 
-        ## update the message in cosmos
         updated_message = await current_app.cosmos_conversation_client.update_message_feedback(
             user_id, message_id, message_feedback
         )
@@ -657,11 +635,9 @@ async def update_message():
 @bp.route("/history/delete", methods=["DELETE"])
 async def delete_conversation():
     await cosmos_db_ready.wait()
-    ## get the user id from the request headers
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for conversation_id
     request_json = await request.get_json()
     conversation_id = request_json.get("conversation_id", None)
 
@@ -669,16 +645,13 @@ async def delete_conversation():
         if not conversation_id:
             return jsonify({"error": "conversation_id is required"}), 400
 
-        ## make sure cosmos is configured
         if not current_app.cosmos_conversation_client:
             raise Exception("CosmosDB is not configured or not working")
 
-        ## delete the conversation messages from cosmos first
         deleted_messages = await current_app.cosmos_conversation_client.delete_messages(
             conversation_id, user_id
         )
 
-        ## Now delete the conversation
         deleted_conversation = await current_app.cosmos_conversation_client.delete_conversation(
             user_id, conversation_id
         )
@@ -703,18 +676,14 @@ async def list_conversations():
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## make sure cosmos is configured
     if not current_app.cosmos_conversation_client:
         raise Exception("CosmosDB is not configured or not working")
 
-    ## get the conversations from cosmos
     conversations = await current_app.cosmos_conversation_client.get_conversations(
         user_id, offset=offset, limit=25
     )
     if not isinstance(conversations, list):
         return jsonify({"error": f"No conversations for {user_id} were found"}), 404
-
-    ## return the conversation ids
 
     return jsonify(conversations), 200
 
@@ -724,22 +693,18 @@ async def get_conversation():
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for conversation_id
     request_json = await request.get_json()
     conversation_id = request_json.get("conversation_id", None)
 
     if not conversation_id:
         return jsonify({"error": "conversation_id is required"}), 400
 
-    ## make sure cosmos is configured
     if not current_app.cosmos_conversation_client:
         raise Exception("CosmosDB is not configured or not working")
 
-    ## get the conversation object and the related messages from cosmos
     conversation = await current_app.cosmos_conversation_client.get_conversation(
         user_id, conversation_id
     )
-    ## return the conversation id and the messages in the bot frontend format
     if not conversation:
         return (
             jsonify(
@@ -750,12 +715,10 @@ async def get_conversation():
             404,
         )
 
-    # get the messages for the conversation from cosmos
     conversation_messages = await current_app.cosmos_conversation_client.get_messages(
         user_id, conversation_id
     )
 
-    ## format the messages in the bot frontend format
     messages = [
         {
             "id": msg["id"],
@@ -769,26 +732,21 @@ async def get_conversation():
 
     return jsonify({"conversation_id": conversation_id, "messages": messages}), 200
 
-# ... (previous code remains the same)
-
 @bp.route("/history/rename", methods=["POST"])
 async def rename_conversation():
     await cosmos_db_ready.wait()
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for conversation_id
     request_json = await request.get_json()
     conversation_id = request_json.get("conversation_id", None)
 
     if not conversation_id:
         return jsonify({"error": "conversation_id is required"}), 400
 
-    ## make sure cosmos is configured
     if not current_app.cosmos_conversation_client:
         raise Exception("CosmosDB is not configured or not working")
 
-    ## get the conversation from cosmos
     conversation = await current_app.cosmos_conversation_client.get_conversation(
         user_id, conversation_id
     )
@@ -802,7 +760,6 @@ async def rename_conversation():
             404,
         )
 
-    ## update the title
     title = request_json.get("title", None)
     if not title:
         return jsonify({"error": "title is required"}), 400
@@ -816,13 +773,10 @@ async def rename_conversation():
 @bp.route("/history/delete_all", methods=["DELETE"])
 async def delete_all_conversations():
     await cosmos_db_ready.wait()
-    ## get the user id from the request headers
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    # get conversations for user
     try:
-        ## make sure cosmos is configured
         if not current_app.cosmos_conversation_client:
             raise Exception("CosmosDB is not configured or not working")
 
@@ -832,15 +786,11 @@ async def delete_all_conversations():
         if not conversations:
             return jsonify({"error": f"No conversations for {user_id} were found"}), 404
 
-        # delete each conversation
         for conversation in conversations:
-            ## delete the conversation messages from cosmos first
-            deleted_messages = await current_app.cosmos_conversation_client.delete_messages(
+            await current_app.cosmos_conversation_client.delete_messages(
                 conversation["id"], user_id
             )
-
-            ## Now delete the conversation
-            deleted_conversation = await current_app.cosmos_conversation_client.delete_conversation(
+            await current_app.cosmos_conversation_client.delete_conversation(
                 user_id, conversation["id"]
             )
         return (
@@ -859,11 +809,9 @@ async def delete_all_conversations():
 @bp.route("/history/clear", methods=["POST"])
 async def clear_messages():
     await cosmos_db_ready.wait()
-    ## get the user id from the request headers
     authenticated_user = get_authenticated_user_details(request_headers=request.headers)
     user_id = authenticated_user["user_principal_id"]
 
-    ## check request for conversation_id
     request_json = await request.get_json()
     conversation_id = request_json.get("conversation_id", None)
 
@@ -871,11 +819,9 @@ async def clear_messages():
         if not conversation_id:
             return jsonify({"error": "conversation_id is required"}), 400
 
-        ## make sure cosmos is configured
         if not current_app.cosmos_conversation_client:
             raise Exception("CosmosDB is not configured or not working")
 
-        ## delete the conversation messages from cosmos
         deleted_messages = await current_app.cosmos_conversation_client.delete_messages(
             conversation_id, user_id
         )
@@ -976,4 +922,3 @@ app = create_app()
 
 if __name__ == "__main__":
     app.run(debug=True)
-
