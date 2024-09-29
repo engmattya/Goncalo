@@ -40,7 +40,6 @@ bp = Blueprint("routes", __name__, static_folder="static", template_folder="stat
 
 cosmos_db_ready = asyncio.Event()
 
-
 def create_app():
     app = Quart(__name__)
     app.register_blueprint(bp)
