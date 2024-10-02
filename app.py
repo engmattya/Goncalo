@@ -17,7 +17,6 @@ from quart import (
     render_template,
     current_app,
 )
-
 from openai import AsyncAzureOpenAI
 from azure.identity.aio import (
     DefaultAzureCredential,
