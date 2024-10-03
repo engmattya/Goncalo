@@ -24,6 +24,7 @@ from azure.identity.aio import (
     ConfidentialClientCredential
 )
 from msgraph.core import GraphClient
+from azure.core.exceptions import AzureError
 from backend.auth.auth_utils import get_authenticated_user_details
 from backend.security.ms_defender_utils import get_msdefender_user_json
 from backend.history.cosmosdbservice import CosmosConversationClient
@@ -82,14 +83,19 @@ AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET")
 if not AZURE_CLIENT_ID or not AZURE_TENANT_ID or not AZURE_CLIENT_SECRET:
     raise ValueError("Azure AD environment variables are not properly set.")
 
-# Initialize Azure OpenAI Client
-async def init_openai_client():
-    azure_openai_client = None
-    
-    try:
-        # Define the system message for Alex
-        ALEX_SYSTEM_MESSAGE = """
-        You are Alex, an AI help desk agent working at CNS. Your primary responsibilities include:
+# Azure OpenAI settings
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
+AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
+
+# System message for the AI
+SYSTEM_MESSAGE = """
+You are Alex, an AI help desk agent at CNS with the capability to directly reset user passwords. 
+When an authenticated user requests a password reset, you should proceed with the reset process immediately. 
+Do not create support tickets for password resets unless there's a specific issue preventing you from doing so.
+For all other queries, provide assistance to the best of your ability.
+
+Your primary responsibilities include:
 
         1. Password Resets: Assist users with resetting their passwords if they're having trouble logging in.
         2. Troubleshooting IT Issues: Help with common IT problems related to software, hardware, and network connectivity.
@@ -97,11 +103,14 @@ async def init_openai_client():
         4. Support Tickets: Create or update support tickets for complex issues that require further investigation or assistance.
         5. FAQs: Provide instant answers to frequently asked questions from the CNS knowledge base.
         6. Resolving Outlook-related issues: Assist with common Outlook problems and configurations.
-        7. Configuring in-house applications: Help users set up and properly configure in-house applications to function correctly in Microsoft Edge.
+        7. Configuring in-house applications: Help users set up and properly configure in-house applications to function correctly in Microsoft Edge
+"""
 
-        Always be polite, professional, and patient. You can now directly reset passwords for users without escalating to human IT specialists.
-        """
-
+# Initialize Azure OpenAI Client
+async def init_openai_client():
+    azure_openai_client = None
+    
+    try:
         # API version check
         if (
             app_settings.azure_openai.preview_api_version
@@ -154,7 +163,7 @@ async def init_openai_client():
         )
 
         # Attach the system message to the client
-        azure_openai_client.system_message = ALEX_SYSTEM_MESSAGE
+        azure_openai_client.system_message = SYSTEM_MESSAGE
 
         return azure_openai_client
     except Exception as e:
@@ -180,7 +189,7 @@ async def reset_user_password(username):
     try:
         graph_client = await init_graph_client()
         
-        # Generate a new password (ensure it meets your organization's password policy)
+        # Generate a new password
         new_password = ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation, k=16))
     
         # Prepare the payload
@@ -434,46 +443,54 @@ async def conversation():
     if 'reset my password' in user_message.lower():
         try:
             # Extract username from the conversation
-            username = None
-            for message in request_json['messages']:
-                if 'Username:' in message['content']:
-                    username = message['content'].split('Username:')[1].strip()
-                    break
+            username = await extract_username(request_json['messages'])
             
             if not username:
-                assistant_response = {
+                return jsonify({
                     "id": str(uuid.uuid4()),
                     "role": "assistant",
                     "content": "I'm sorry, but I couldn't find your username in our conversation. Can you please provide your username?"
-                }
-            else:
-                # Reset the password
-                new_password = await reset_user_password(username)
+                }), 200
 
-                # Log the successful password reset
-                await log_password_reset(username)
-
-                # Respond to the user with the new password
-                assistant_response = {
+            # Check if the user is authenticated
+            authenticated_user = get_authenticated_user_details(request.headers)
+            if not authenticated_user or authenticated_user.get("user_principal_id") != username:
+                return jsonify({
                     "id": str(uuid.uuid4()),
                     "role": "assistant",
-                    "content": f"Your password has been reset successfully. Your new temporary password is: {new_password}\n\nPlease log in with this temporary password and change it to a strong, unique password of your choosing immediately.\n\nIs there anything else I can assist you with regarding your account or any other IT matters?"
-                }
+                    "content": "I'm sorry, but I can't reset your password because you're not currently authenticated or the username doesn't match your authenticated account. Please ensure you're logged in with the correct account and try again."
+                }), 200
 
-            return jsonify(assistant_response), 200
-        except Exception as e:
-            logging.error(f"An error occurred during password reset: {e}")
-            assistant_response = {
+            # Reset the password
+            new_password = await reset_user_password(username)
+
+            # Log the successful password reset
+            await log_password_reset(username)
+
+            # Respond to the user with the new password
+            return jsonify({
                 "id": str(uuid.uuid4()),
                 "role": "assistant",
-                "content": "I apologize, but I encountered an error while trying to reset your password. Please try again later or contact the IT support team for assistance."
-            }
-            if username:
+                "content": f"Your password has been reset successfully. Your new temporary password is: {new_password}\n\nPlease log in with this temporary password and change it to a strong, unique password of your choosing immediately.\n\nIs there anything else I can assist you with regarding your account or any other IT matters?"
+            }), 200
+        except Exception as e:
+            logging.error(f"An error occurred during password reset: {e}")
+            if 'username' in locals():
                 await log_failed_password_reset_attempt(username, str(e))
-            return jsonify(assistant_response), 200
+            return jsonify({
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": "I apologize, but I encountered an error while trying to reset your password. This might be due to a temporary issue with our password reset system. Please try again later or contact the IT support team for assistance."
+            }), 200
 
     # Continue with existing conversation logic
     return await conversation_internal(request_json, request.headers)
+
+async def extract_username(messages):
+    for message in reversed(messages):
+        if 'Username:' in message['content']:
+            return message['content'].split('Username:')[1].strip()
+    return None
 
 @bp.route("/frontend_settings", methods=["GET"])
 def get_frontend_settings():
