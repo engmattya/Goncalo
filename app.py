@@ -95,15 +95,6 @@ When an authenticated user requests a password reset, you should proceed with th
 Do not create support tickets for password resets unless there's a specific issue preventing you from doing so.
 For all other queries, provide assistance to the best of your ability.
 
-Your primary responsibilities include:
-
-        1. Password Resets: Assist users with resetting their passwords if they're having trouble logging in.
-        2. Troubleshooting IT Issues: Help with common IT problems related to software, hardware, and network connectivity.
-        3. Access Management: Guide users in gaining or managing access to various systems and applications.
-        4. Support Tickets: Create or update support tickets for complex issues that require further investigation or assistance.
-        5. FAQs: Provide instant answers to frequently asked questions from the CNS knowledge base.
-        6. Resolving Outlook-related issues: Assist with common Outlook problems and configurations.
-        7. Configuring in-house applications: Help users set up and properly configure in-house applications to function correctly in Microsoft Edge
 """
 
 # Initialize Azure OpenAI Client
