@@ -1,37 +1,47 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
+# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 
-name: Build and deploy container app to Azure Web App - DPhelpdesk
+name: Build and deploy Python app to Azure Web App - DPhelpdesk
 
 on:
   push:
     branches:
-      - main
+      - test
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: 'ubuntu-latest'
+    runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      - name: Set up Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
 
-    - name: Log in to registry
-      uses: docker/login-action@v2
-      with:
-        registry: https://aiacr2.azurecr.io/
-        username: ${{ secrets.AzureAppService_ContainerUsername_750715a9033e47a38093e2656e9e57c2 }}
-        password: ${{ secrets.AzureAppService_ContainerPassword_6c2add3668fd407e80d3055b82ec6f74 }}
+      - name: Create and start virtual environment
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+        
+      # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
-    - name: Build and push container image to registry
-      uses: docker/build-push-action@v3
-      with:
-        push: true
-        tags: aiacr2.azurecr.io/${{ secrets.AzureAppService_ContainerUsername_750715a9033e47a38093e2656e9e57c2 }}/imageacr2:${{ github.sha }}
-        file: ./Dockerfile
+      - name: Zip artifact for deployment
+        run: zip release.zip ./* -r
+
+      - name: Upload artifact for deployment jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app
+          path: |
+            release.zip
+            !venv/
 
   deploy:
     runs-on: ubuntu-latest
@@ -39,13 +49,21 @@ jobs:
     environment:
       name: 'production'
       url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
-
+    
     steps:
-    - name: Deploy to Azure Web App
-      id: deploy-to-webapp
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: 'DPhelpdesk'
-        slot-name: 'production'
-        publish-profile: ${{ secrets.AzureAppService_PublishProfile_f59c0ddf68a849b39dfb31f9d7bcbe98 }}
-        images: 'aiacr2.azurecr.io/${{ secrets.AzureAppService_ContainerUsername_750715a9033e47a38093e2656e9e57c2 }}/imageacr2:${{ github.sha }}'
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app
+
+      - name: Unzip artifact for deployment
+        run: unzip release.zip
+
+      
+      - name: 'Deploy to Azure Web App'
+        uses: azure/webapps-deploy@v3
+        id: deploy-to-webapp
+        with:
+          app-name: 'DPhelpdesk'
+          slot-name: 'production'
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_466E73EF14AC4DFE8BD5B3F825B6C8E5 }}
