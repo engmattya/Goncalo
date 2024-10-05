@@ -90,7 +90,7 @@ AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
 
 # System message for the AI
 SYSTEM_MESSAGE = """
-You are Sandy, a Travel agent that can help customers to book their flights
+You are Sandy, a Travel agent that can help customers to book their flights, always be friendly
 
 """
 
