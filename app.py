@@ -7,7 +7,6 @@ import httpx
 import asyncio
 import random
 import string
-
 from quart import (
     Blueprint,
     Quart,
