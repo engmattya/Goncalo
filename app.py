@@ -61,17 +61,16 @@ frontend_settings = {
         app_settings.chat_history.enable_feedback
     ),
     "ui": {
-        "title": app_settings.ui.title,
-        "logo": app_settings.ui.logo,
-        "chat_logo": app_settings.ui.chat_logo or app_settings.ui.logo,
-        "chat_title": app_settings.ui.chat_title,
+        "title": "CNS",  # Changed to CNS
+        "logo": "/cns-logo.png",  # Updated path to the logo
+        "chat_logo": "/cns-logo.png",  # Updated path to the logo
+        "chat_title": "CNS Assistant",  # Changed to CNS Assistant
         "chat_description": app_settings.ui.chat_description,
         "show_share_button": app_settings.ui.show_share_button,
         "show_chat_history_button": app_settings.ui.show_chat_history_button,
     },
     "sanitize_answer": app_settings.base_settings.sanitize_answer,
 }
-
 # Enable Microsoft Defender for Cloud Integration
 MS_DEFENDER_ENABLED = os.environ.get("MS_DEFENDER_ENABLED", "true").lower() == "true"
 
@@ -415,7 +414,7 @@ async def conversation_internal(request_body, request_headers):
 async def index():
     return await render_template(
         "index.html",
-        title=app_settings.ui.title,
+        title="CNS",  # Changed to CNS
         favicon=app_settings.ui.favicon
     )
 
@@ -426,6 +425,10 @@ async def favicon():
 @bp.route("/assets/<path:path>")
 async def assets(path):
     return await send_from_directory("static/assets", path)
+
+@bp.route("/cns-logo.png")
+async def serve_logo():
+    return await send_from_directory(".", "cns-logo.png")
 
 @bp.route("/conversation", methods=["POST"])
 async def conversation():
