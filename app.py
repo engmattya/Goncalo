@@ -153,6 +153,9 @@ async def init_openai_client():
         # Attach the system message to the client
         azure_openai_client.system_message = SYSTEM_MESSAGE
 
+        # Log the system message being used
+        logging.info(f"System message being used: {azure_openai_client.system_message}")
+
         return azure_openai_client
     except Exception as e:
         logging.exception("Exception in Azure OpenAI initialization", e)
@@ -258,6 +261,9 @@ async def prepare_model_args(request_body, request_headers):
         authenticated_user_details = get_authenticated_user_details(request_headers)
         conversation_id = request_body.get("conversation_id", None)        
         user_json = get_msdefender_user_json(authenticated_user_details, request_headers, conversation_id)
+
+    # Add logging here
+    logging.info(f"Messages being sent to OpenAI: {messages}")
 
     model_args = {
         "messages": messages,
