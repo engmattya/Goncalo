@@ -53,41 +53,6 @@ else:
 
 USER_AGENT = "GitHubSampleWebApp/AsyncAzureOpenAI/1.0.0"
 
-# Frontend Settings via Environment Variables
-frontend_settings = {
-    "auth_enabled": app_settings.base_settings.auth_enabled,
-    "feedback_enabled": (
-        app_settings.chat_history and
-        app_settings.chat_history.enable_feedback
-    ),
-    "ui": {
-        "title": app_settings.ui.title,
-        "logo": app_settings.ui.logo,
-        "chat_logo": app_settings.ui.chat_logo or app_settings.ui.logo,
-        "chat_title": app_settings.ui.chat_title,
-        "chat_description": app_settings.ui.chat_description,
-        "show_share_button": app_settings.ui.show_share_button,
-        "show_chat_history_button": app_settings.ui.show_chat_history_button,
-    },
-    "sanitize_answer": app_settings.base_settings.sanitize_answer,
-}
-
-# Enable Microsoft Defender for Cloud Integration
-MS_DEFENDER_ENABLED = os.environ.get("MS_DEFENDER_ENABLED", "true").lower() == "true"
-
-# Azure AD settings
-AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID")
-AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID")
-AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET")
-
-if not AZURE_CLIENT_ID or not AZURE_TENANT_ID or not AZURE_CLIENT_SECRET:
-    raise ValueError("Azure AD environment variables are not properly set.")
-
-# Azure OpenAI settings
-AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
-AZURE_OPENAI_MODEL = os.environ.get("AZURE_OPENAI_MODEL")
-
 # System message for the AI
 SYSTEM_MESSAGE = """
 You are Alex, an AI help desk agent at CNS with the capability to directly reset user passwords. 
@@ -168,9 +133,9 @@ async def init_openai_client():
 async def init_graph_client():
     try:
         credential = ConfidentialClientCredential(
-            client_id=AZURE_CLIENT_ID,
-            client_secret=AZURE_CLIENT_SECRET,
-            tenant_id=AZURE_TENANT_ID,
+            client_id=app_settings.azure_ad.client_id,
+            client_secret=app_settings.azure_ad.client_secret,
+            tenant_id=app_settings.azure_ad.tenant_id,
         )
         return GraphClient(credential=credential)
     except Exception as e:
@@ -214,183 +179,83 @@ async def log_failed_password_reset_attempt(username, error=None):
     logging.warning(f"Failed password reset attempt for user {username}. Error: {error}")
     # In a real implementation, you would want to log this to a secure, tamper-evident system
 
-async def init_cosmosdb_client():
-    cosmos_conversation_client = None
-    if app_settings.chat_history:
+@bp.route("/conversation", methods=["POST"])
+async def conversation():
+    if not request.is_json:
+        return jsonify({"error": "request must be json"}), 415
+    request_json = await request.get_json()
+
+    # Extract the user's message
+    user_message = request_json['messages'][-1]['content']
+
+    if 'reset my password' in user_message.lower():
         try:
-            cosmos_endpoint = (
-                f"https://{app_settings.chat_history.account}.documents.azure.com:443/"
-            )
-
-            if not app_settings.chat_history.account_key:
-                async with DefaultAzureCredential() as cred:
-                    credential = cred
-            else:
-                credential = app_settings.chat_history.account_key
-
-            cosmos_conversation_client = CosmosConversationClient(
-                cosmosdb_endpoint=cosmos_endpoint,
-                credential=credential,
-                database_name=app_settings.chat_history.database,
-                container_name=app_settings.chat_history.conversations_container,
-                enable_message_feedback=app_settings.chat_history.enable_feedback,
-            )
-        except Exception as e:
-            logging.exception("Exception in CosmosDB initialization", e)
-            cosmos_conversation_client = None
-            raise e
-    else:
-        logging.debug("CosmosDB not configured")
-
-    return cosmos_conversation_client
-
-async def prepare_model_args(request_body, request_headers):
-    azure_openai_client = await init_openai_client()
-    request_messages = request_body.get("messages", [])
-    messages = [{"role": "system", "content": azure_openai_client.system_message}]
-
-    for message in request_messages:
-        if message:
-            messages.append(
-                {
-                    "role": message["role"],
-                    "content": message["content"]
-                }
-            )
-
-    user_json = None
-    if (MS_DEFENDER_ENABLED):
-        authenticated_user_details = get_authenticated_user_details(request_headers)
-        conversation_id = request_body.get("conversation_id", None)        
-        user_json = get_msdefender_user_json(authenticated_user_details, request_headers, conversation_id)
-
-    # Add logging here
-    logging.info(f"Messages being sent to OpenAI: {messages}")
-
-    model_args = {
-        "messages": messages,
-        "temperature": app_settings.azure_openai.temperature,
-        "max_tokens": app_settings.azure_openai.max_tokens,
-        "top_p": app_settings.azure_openai.top_p,
-        "stop": app_settings.azure_openai.stop_sequence,
-        "stream": app_settings.azure_openai.stream,
-        "model": app_settings.azure_openai.model,
-        "user": user_json
-    }
-
-    model_args_clean = copy.deepcopy(model_args)
-    if model_args_clean.get("extra_body"):
-        secret_params = [
-            "key",
-            "connection_string",
-            "embedding_key",
-            "encoded_api_key",
-            "api_key",
-        ]
-        for secret_param in secret_params:
-            if model_args_clean["extra_body"]["data_sources"][0]["parameters"].get(
-                secret_param
-            ):
-                model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                    secret_param
-                ] = "*****"
-        authentication = model_args_clean["extra_body"]["data_sources"][0][
-            "parameters"
-        ].get("authentication", {})
-        for field in authentication:
-            if field in secret_params:
-                model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                    "authentication"
-                ][field] = "*****"
-        embeddingDependency = model_args_clean["extra_body"]["data_sources"][0][
-            "parameters"
-        ].get("embedding_dependency", {})
-        if "authentication" in embeddingDependency:
-            for field in embeddingDependency["authentication"]:
-                if field in secret_params:
-                    model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                        "embedding_dependency"
-                    ]["authentication"][field] = "*****"
-
-    logging.debug(f"REQUEST BODY: {json.dumps(model_args_clean, indent=4)}")
-
-    return model_args
-
-async def promptflow_request(request):
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {app_settings.promptflow.api_key}",
-        }
-        logging.debug(f"Setting timeout to {app_settings.promptflow.response_timeout}")
-        async with httpx.AsyncClient(
-            timeout=float(app_settings.promptflow.response_timeout)
-        ) as client:
-            pf_formatted_obj = convert_to_pf_format(
-                request,
-                app_settings.promptflow.request_field_name,
-                app_settings.promptflow.response_field_name
-            )
-            response = await client.post(
-                app_settings.promptflow.endpoint,
-                json={
-                    app_settings.promptflow.request_field_name: pf_formatted_obj[-1]["inputs"][app_settings.promptflow.request_field_name],
-                    "chat_history": pf_formatted_obj[:-1],
-                },
-                headers=headers,
-            )
-        resp = response.json()
-        resp["id"] = request["messages"][-1]["id"]
-        return resp
-    except Exception as e:
-        logging.error(f"An error occurred while making promptflow_request: {e}")
-        raise
-
-async def send_chat_request(request_body, request_headers):
-    filtered_messages = []
-    messages = request_body.get("messages", [])
-    for message in messages:
-        if message.get("role") != 'tool':
-            filtered_messages.append(message)
+            # Extract username from the conversation using Azure OpenAI
+            username = await extract_username_with_openai(request_json['messages'])
             
-    request_body['messages'] = filtered_messages
-    model_args = await prepare_model_args(request_body, request_headers)
+            if not username:
+                return await generate_openai_response("I'm sorry, but I couldn't find your username in our conversation. Can you please provide your username?")
 
-    try:
-        azure_openai_client = await init_openai_client()
-        raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
-        response = raw_response.parse()
-        apim_request_id = raw_response.headers.get("apim-request-id") 
-    except Exception as e:
-        logging.exception("Exception in send_chat_request")
-        raise e
+            # Check if the user is authenticated
+            authenticated_user = get_authenticated_user_details(request.headers)
+            if not authenticated_user or authenticated_user.get("user_principal_id") != username:
+                return await generate_openai_response("I'm sorry, but I can't reset your password because you're not currently authenticated or the username doesn't match your authenticated account. Please ensure you're logged in with the correct account and try again.")
 
-    return response, apim_request_id
+            # Reset the password
+            new_password = await reset_user_password(username)
 
-async def complete_chat_request(request_body, request_headers):
-    if app_settings.base_settings.use_promptflow:
-        response = await promptflow_request(request_body)
-        history_metadata = request_body.get("history_metadata", {})
-        return format_pf_non_streaming_response(
-            response,
-            history_metadata,
-            app_settings.promptflow.response_field_name,
-            app_settings.promptflow.citations_field_name
-        )
-    else:
-        response, apim_request_id = await send_chat_request(request_body, request_headers)
-        history_metadata = request_body.get("history_metadata", {})
-        return format_non_streaming_response(response, history_metadata, apim_request_id)
+            # Log the successful password reset
+            await log_password_reset(username)
 
-async def stream_chat_request(request_body, request_headers):
-    response, apim_request_id = await send_chat_request(request_body, request_headers)
-    history_metadata = request_body.get("history_metadata", {})
+            # Respond to the user with the new password using Azure OpenAI
+            return await generate_openai_response(f"Your password has been reset successfully. Your new temporary password is: {new_password}\n\nPlease log in with this temporary password and change it to a strong, unique password of your choosing immediately.\n\nIs there anything else I can assist you with regarding your account or any other IT matters?")
+        except Exception as e:
+            logging.error(f"An error occurred during password reset: {e}")
+            if 'username' in locals():
+                await log_failed_password_reset_attempt(username, str(e))
+            return await generate_openai_response("I apologize, but I encountered an error while trying to reset your password. This might be due to a temporary issue with our password reset system. Please try again later or contact the IT support team for assistance.")
+
+    # Continue with existing conversation logic
+    return await conversation_internal(request_json, request.headers)
+
+async def extract_username_with_openai(messages):
+    azure_openai_client = await init_openai_client()
     
-    async def generate():
-        async for completionChunk in response:
-            yield format_stream_response(completionChunk, history_metadata, apim_request_id)
+    prompt = "Based on the conversation history, what is the username of the person requesting a password reset? If no username is explicitly mentioned, respond with 'Unknown'."
+    
+    messages_for_openai = messages + [{"role": "user", "content": prompt}]
+    
+    response = await azure_openai_client.chat.completions.create(
+        model=app_settings.azure_openai.model,
+        messages=messages_for_openai,
+        temperature=0,
+        max_tokens=50
+    )
+    
+    extracted_username = response.choices[0].message.content.strip()
+    return None if extracted_username == 'Unknown' else extracted_username
 
-    return generate()
+async def generate_openai_response(message):
+    azure_openai_client = await init_openai_client()
+    
+    response = await azure_openai_client.chat.completions.create(
+        model=app_settings.azure_openai.model,
+        messages=[
+            {"role": "system", "content": SYSTEM_MESSAGE},
+            {"role": "user", "content": "Password reset request"},
+            {"role": "assistant", "content": message}
+        ],
+        temperature=0.7,
+        max_tokens=150
+    )
+    
+    return jsonify({
+        "id": str(uuid.uuid4()),
+        "role": "assistant",
+        "content": response.choices[0].message.content
+    }), 200
+
+# ... (rest of your existing code)
 
 async def conversation_internal(request_body, request_headers):
     try:
