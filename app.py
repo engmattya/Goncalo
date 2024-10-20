@@ -5,6 +5,8 @@ import logging
 import uuid
 import httpx
 import asyncio
+import aiohttp
+from datetime import datetime
 import random
 import string
 from quart import (
@@ -53,11 +55,74 @@ else:
 
 USER_AGENT = "GitHubSampleWebApp/AsyncAzureOpenAI/1.0.0"
 
+OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY", "your_api_key_here")
+
+async def get_weather(location):
+    """
+    Fetch weather data for a given location using the OpenWeatherMap API.
+    """
+    base_url = "http://api.openweathermap.org/data/2.5/weather"
+    params = {
+        "q": location,
+        "appid": OPENWEATHERMAP_API_KEY,
+        "units": "metric"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(base_url, params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+                weather_description = data['weather'][0]['description']
+                temperature = data['main']['temp']
+                humidity = data['main']['humidity']
+                wind_speed = data['wind']['speed']
+                
+                return f"Current weather in {location}: {weather_description}. Temperature: {temperature}°C, Humidity: {humidity}%, Wind speed: {wind_speed} m/s."
+            else:
+                return f"Unable to fetch weather data for {location}. Please check the location name and try again."
+
+# Modify the conversation_internal function to include weather capability
+async def conversation_internal(request_body, request_headers):
+    try:
+        messages = request_body.get("messages", [])
+        last_user_message = messages[-1]["content"].lower() if messages else ""
+
+        if "weather in" in last_user_message:
+            location = last_user_message.split("weather in")[-1].strip()
+            weather_info = await get_weather(location)
+            
+            response = {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": weather_info
+            }
+            return jsonify(response)
+
+        # Existing conversation logic
+        if app_settings.azure_openai.stream and not app_settings.base_settings.use_promptflow:
+            result = await stream_chat_request(request_body, request_headers)
+            response = await make_response(format_as_ndjson(result))
+            response.timeout = None
+            response.mimetype = "application/json-lines"
+            return response
+        else:
+            result = await complete_chat_request(request_body, request_headers)
+            return jsonify(result)
+
+    except Exception as ex:
+        logging.exception(ex)
+        if hasattr(ex, "status_code"):
+            return jsonify({"error": str(ex)}), ex.status_code
+        else:
+            return jsonify({"error": str(ex)}), 500
+
+
 # System message for the AI
 SYSTEM_MESSAGE = """
-You are Alex, an AI help desk agent at CNS with the capability to directly reset user passwords. 
+You are Alex, an AI help desk agent at CNS with the capability to directly reset user passwords and provide weather information. 
 When an authenticated user requests a password reset, you should proceed with the reset process immediately. 
 Do not create support tickets for password resets unless there's a specific issue preventing you from doing so.
+You can also provide weather information for any location when asked. Use the phrase "weather in [location]" to trigger this functionality.
 For all other queries, provide assistance to the best of your ability.
 """
 
